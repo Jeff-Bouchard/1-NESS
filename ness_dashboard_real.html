@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NESS // Real Control Plane</title>
+<style>
+:root{
+  --bg:#04110c; --panel:#0a1711; --panel2:#0d1d16; --border:#174230;
+  --text:#e4f5ec; --muted:#9cc8b3; --green:#2ff58b; --blue:#67c7ff;
+  --warn:#ffb454; --red:#ff6f7d; --gold:#ffe36e;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+  --ui:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:var(--ui)}
+body{font-size:20px;line-height:1.55}
+a{color:var(--green)}
+button,input{font:inherit}
+.wrap{max-width:1550px;margin:0 auto;padding:20px}
+.top{display:grid;grid-template-columns:1.25fr .75fr;gap:18px;margin-bottom:18px}
+@media (max-width:1000px){.top{grid-template-columns:1fr}}
+.card,.panel{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--border);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+.card{padding:20px}
+.kicker{font:700 14px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:9px}
+h1{margin:0 0 10px;font-size:40px;line-height:1.08}
+.lede{color:var(--muted);max-width:62rem;font-size:20px}
+.topline{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.pill{display:inline-flex;align-items:center;gap:9px;padding:9px 13px;border:1px solid var(--border);border-radius:999px;background:rgba(255,255,255,.02);font:600 15px var(--mono);color:var(--muted)}
+.dot{width:11px;height:11px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.dot.ok{background:var(--green);box-shadow:0 0 10px rgba(47,245,139,.5)}
+.dot.bad{background:var(--red)}
+.dot.warn{background:var(--warn)}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.btn{appearance:none;border:1px solid var(--border);background:#10241b;color:var(--text);border-radius:10px;padding:11px 15px;font:700 16px var(--mono);cursor:pointer}
+.btn:hover:not(:disabled){border-color:var(--green);color:var(--green)}
+.btn.danger{border-color:rgba(255,111,125,.55);color:var(--red);background:rgba(255,111,125,.06)}
+.btn.danger:hover:not(:disabled){border-color:var(--red);background:rgba(255,111,125,.12)}
+.btn:disabled{opacity:.42;cursor:not-allowed}
+.btn input{display:none}
+.meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media (max-width:680px){.meta{grid-template-columns:1fr}}
+.metaBox{border:1px solid var(--border);border-radius:10px;padding:14px;background:rgba(255,255,255,.02)}
+.metaBox .lbl{font:700 14px var(--mono);letter-spacing:.14em;color:var(--muted);text-transform:uppercase;margin-bottom:6px}
+.metaBox .val{font:700 19px var(--mono);word-break:break-word}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+@media (max-width:1180px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:650px){.grid{grid-template-columns:1fr}}
+.metric{padding:18px}
+.metric .lbl{font:700 14px var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:9px}
+.metric .big{font:800 36px/1 var(--mono);margin-bottom:7px}
+.metric .sub{font:600 16px var(--mono);color:var(--muted);word-break:break-word}
+.ok{color:var(--green)} .warn{color:var(--warn)} .bad{color:var(--red)} .blue{color:var(--blue)} .gold{color:var(--gold)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:1000px){.two{grid-template-columns:1fr}}
+.panel h2{margin:0;padding:16px 18px;border-bottom:1px solid var(--border);font-size:24px}
+.panelBody{padding:18px}
+.tableWrap{overflow:auto}
+.table{width:100%;border-collapse:collapse;min-width:680px}
+.table th,.table td{padding:13px 11px;border-bottom:1px solid rgba(255,255,255,.065);text-align:left;vertical-align:top}
+.table th{font:700 14px var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+.table td{font-size:17px}
+.table tbody tr[data-listener]{cursor:default}
+.table tbody tr[data-listener]:hover{background:rgba(47,245,139,.035)}
+.code{font-family:var(--mono);font-size:16px;word-break:break-word}
+.list{display:grid;gap:10px}
+.row{border:1px solid var(--border);border-radius:10px;padding:13px;background:rgba(255,255,255,.02)}
+.row h3{margin:0 0 8px;font-size:19px}
+.row small{color:var(--muted);font:500 15px var(--mono)}
+.log{display:grid;gap:8px;max-height:380px;overflow:auto}
+.ev{display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:start;border:1px solid var(--border);border-radius:10px;padding:11px;background:rgba(255,255,255,.02)}
+.ev .ts{font:600 15px var(--mono);color:var(--muted)}
+.tag{font:700 13px var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:999px;border:1px solid var(--border)}
+.tag.ok{color:var(--green);border-color:rgba(47,245,139,.4)} .tag.warn{color:var(--warn);border-color:rgba(255,180,84,.4)} .tag.bad{color:var(--red);border-color:rgba(255,111,125,.4)} .tag.info{color:var(--blue);border-color:rgba(103,199,255,.4)}
+.notice{padding:13px 15px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);background:rgba(255,255,255,.02);font-size:17px}
+.transportGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:1050px){.transportGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:650px){.transportGrid{grid-template-columns:1fr}}
+.transport{border:1px solid var(--border);border-radius:12px;padding:14px;background:rgba(255,255,255,.02)}
+.transport.mandatory{border-width:2px}
+.transport h3{margin:0 0 6px;font-size:20px;display:flex;justify-content:space-between;gap:8px}
+.transport .state{font:800 18px var(--mono)}
+.transport .detail{font:500 15px var(--mono);color:var(--muted);word-break:break-word}
+.walletActions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+.walletFile{display:none}
+.walletLocal{display:grid;gap:10px;margin-top:10px}
+.walletKV{display:grid;grid-template-columns:160px 1fr;gap:8px;font-size:16px}
+@media (max-width:640px){.walletKV{grid-template-columns:1fr}}
+.walletKV b{font-family:var(--mono);color:var(--muted)}
+.small{font-size:15px;color:var(--muted)}
+.modalBg{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:20px;z-index:50}
+.modalBg.open{display:flex}
+.modal{width:min(880px,96vw);max-height:88vh;overflow:auto;background:var(--panel2);border:1px solid var(--border);border-radius:14px;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.modalHead{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--border)}
+.modalHead h3{margin:0;font-size:22px}
+.modalBody{padding:18px}
+.detailGrid{display:grid;grid-template-columns:150px 1fr;gap:10px 14px}
+@media (max-width:650px){.detailGrid{grid-template-columns:1fr}}
+.detailGrid .k{font:700 14px var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.detailGrid .v{font:600 16px var(--mono);word-break:break-word;white-space:pre-wrap}
+footer{margin-top:18px;color:var(--muted);font-size:16px}
+pre{margin:0;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="top">
+    <div class="card">
+      <div class="kicker">PrivateNESS / real-only control plane</div>
+      <h1>Observed state, with teeth.</h1>
+      <div class="lede">No fake metrics, simulated routes, pretend wallets, or decorative health. Start the local manager for live listener control; snapshots still work read-only.</div>
+      <div class="topline" id="statusPills"></div>
+      <div class="actions">
+        <button class="btn" id="reloadBtn">Reload live state</button>
+        <label class="btn">Import snapshot JSON<input type="file" id="fileInput" accept="application/json,.json"></label>
+      </div>
+    </div>
+    <div class="card">
+      <div class="kicker">Observation metadata</div>
+      <div class="meta">
+        <div class="metaBox"><div class="lbl">Generated at</div><div class="val" id="mGenerated">Not loaded</div></div>
+        <div class="metaBox"><div class="lbl">Host</div><div class="val" id="mHost">Not loaded</div></div>
+        <div class="metaBox"><div class="lbl">Platform</div><div class="val" id="mPlatform">Not loaded</div></div>
+        <div class="metaBox"><div class="lbl">Trust root</div><div class="val code" id="mRoot">dpo:PrivateNESS.Network</div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card metric"><div class="lbl">PrivateNESS daemon</div><div class="big" id="nessOk">Unknown</div><div class="sub code" id="nessSub">127.0.0.1:6660</div></div>
+    <div class="card metric"><div class="lbl">Emercoin Core</div><div class="big" id="emcOk">Unknown</div><div class="sub code" id="emcSub">127.0.0.1:6662</div></div>
+    <div class="card metric"><div class="lbl">x402 / ness402d</div><div class="big" id="x402Ok">Unknown</div><div class="sub code" id="x402Sub">unix:///run/ness402d.sock</div></div>
+    <div class="card metric"><div class="lbl">Observed listeners</div><div class="big" id="listenCount">0</div><div class="sub" id="listenSub">No state loaded</div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:18px">
+    <h2>Transport substrate</h2>
+    <div class="panelBody">
+      <div class="transportGrid" id="transportGrid"></div>
+    </div>
+  </section>
+
+  <section class="two">
+    <div class="panel">
+      <h2>Service checks</h2>
+      <div class="panelBody tableWrap">
+        <table class="table" id="checksTable">
+          <thead><tr><th>Check</th><th>Status</th><th>Observed details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Network listeners</h2>
+      <div class="panelBody">
+        <div class="notice" style="margin-bottom:10px">Double-click a listener for its full command line. KILL sends a real local termination request through the loopback manager. No manager, no kill. Civilization survives another toggle.</div>
+        <div class="tableWrap">
+          <table class="table" id="listenersTable">
+            <thead><tr><th>Proto</th><th>Bind</th><th>PID</th><th>Process</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="two" style="margin-top:18px">
+    <div class="panel">
+      <h2>Wallet / chain observations</h2>
+      <div class="panelBody">
+        <div class="walletActions">
+          <label class="btn">Browse NESS wallet<input class="walletFile" type="file" id="nessWalletInput" accept=".json,.wlt,.wallet,application/json"></label>
+          <label class="btn">Browse Emercoin wallet/export<input class="walletFile" type="file" id="emcWalletInput"></label>
+          <button class="btn" id="clearWallets">Clear loaded wallet views</button>
+        </div>
+        <div class="small">Wallet files are read locally by the browser. They are not uploaded to the manager. Secret-looking fields are not rendered. Binary <span class="code">wallet.dat</span> files are fingerprinted only, not parsed.</div>
+        <div class="list" id="walletList" style="margin-top:12px"><div class="notice">No wallet or chain observations loaded yet.</div></div>
+        <div class="walletLocal" id="walletLocal"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Agent registry observations</h2>
+      <div class="panelBody list" id="agentsList">
+        <div class="notice">No real agent registry imported.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <h2>Event log</h2>
+    <div class="panelBody"><div class="log" id="eventLog"><div class="notice">No events observed yet.</div></div></div>
+  </section>
+
+  <section class="panel" style="margin-top:18px">
+    <h2>Raw state excerpt</h2>
+    <div class="panelBody"><pre class="code" id="rawBlock">No state loaded.</pre></div>
+  </section>
+
+  <footer>
+    Live management: <span class="code">./start-dashboard.sh</span>. Read-only snapshot: <span class="code">./ness_dashboard_observe.sh</span>. Skywire is treated as mandatory; Yggdrasil, I2P and Tor are optional observations.
+  </footer>
+</div>
+
+<div class="modalBg" id="listenerModal">
+  <div class="modal">
+    <div class="modalHead"><h3>Listener process details</h3><button class="btn" id="closeModal">Close</button></div>
+    <div class="modalBody"><div class="detailGrid" id="listenerDetails"></div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let currentState = null;
+let managerToken = '';
+let managerAvailable = false;
+let locallyLoadedWallets = [];
+
+$('reloadBtn').addEventListener('click', loadBestState);
+$('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  managerAvailable = false; managerToken = '';
+  renderState(JSON.parse(text));
+});
+$('nessWalletInput').addEventListener('change', e => handleWalletFile(e, 'NESS'));
+$('emcWalletInput').addEventListener('change', e => handleWalletFile(e, 'Emercoin'));
+$('clearWallets').addEventListener('click', () => { locallyLoadedWallets = []; renderLocalWallets(); $('nessWalletInput').value=''; $('emcWalletInput').value=''; });
+$('closeModal').addEventListener('click', () => $('listenerModal').classList.remove('open'));
+$('listenerModal').addEventListener('click', e => { if (e.target === $('listenerModal')) $('listenerModal').classList.remove('open'); });
+
+function statusClass(ok){ return ok === true ? 'ok' : ok === false ? 'bad' : 'warn'; }
+function statusText(ok){ return ok === true ? 'OK' : ok === false ? 'NO' : 'UNKNOWN'; }
+
+async function loadBestState(){
+  try {
+    const r = await fetch('/api/state', {cache:'no-store'});
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    const s = await r.json();
+    managerAvailable = !!s.manager?.available;
+    managerToken = s.manager?.token || '';
+    renderState(s);
+    return;
+  } catch (_) {}
+  try {
+    const r = await fetch('./ness-dashboard-state.json', {cache:'no-store'});
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    managerAvailable = false; managerToken = '';
+    renderState(await r.json());
+  } catch (err) {
+    managerAvailable = false; managerToken = '';
+    renderState({
+      generated_at:null, host:{hostname:null,platform:null}, trust_root:'dpo:PrivateNESS.Network',
+      checks:{}, transports:{}, listeners:[],
+      events:[{timestamp:new Date().toISOString(),level:'warn',message:'No live manager or snapshot loaded: '+err.message}]
+    });
+  }
+}
+
+function renderState(state){
+  currentState = state;
+  $('mGenerated').textContent = state.generated_at || 'Not observed';
+  $('mHost').textContent = state.host?.hostname || 'Not observed';
+  $('mPlatform').textContent = state.host?.platform || 'Not observed';
+  $('mRoot').textContent = state.trust_root || 'dpo:PrivateNESS.Network';
+
+  const checks = state.checks || {};
+  const tr = state.transports || {};
+  const listeners = state.listeners || [];
+  const pills = [
+    ['NESS', checks.ness_http_health?.ok], ['EMC', checks.emercoin_rpc?.ok], ['x402', checks.ness402_socket?.ok],
+    ['SKYWIRE REQUIRED', tr.skywire?.ok], ['YGG optional', tr.yggdrasil?.ok], ['I2P optional', tr.i2p?.ok], ['TOR optional', tr.tor?.ok],
+    ['MANAGER', managerAvailable]
+  ];
+  $('statusPills').innerHTML = pills.map(([name, ok]) => `<span class="pill"><span class="dot ${ok===true?'ok':ok===false?'bad':'warn'}"></span>${escapeHtml(name)}: ${statusText(ok)}</span>`).join('');
+
+  updateMetric('nessOk','nessSub', checks.ness_http_health, '127.0.0.1:6660');
+  updateMetric('emcOk','emcSub', checks.emercoin_rpc, '127.0.0.1:6662');
+  updateMetric('x402Ok','x402Sub', checks.ness402_socket, 'unix:///run/ness402d.sock');
+  $('listenCount').textContent = String(listeners.length || 0);
+  $('listenSub').textContent = listeners.length ? (managerAvailable ? 'Live local state' : 'Snapshot state') : 'No listeners observed';
+
+  renderTransports(tr);
+  renderChecks(checks);
+  renderListeners(listeners);
+  renderWallet(state);
+  renderAgents(state);
+  renderEvents(state.events || []);
+  $('rawBlock').textContent = JSON.stringify(state, (k,v) => k === 'token' ? '[session token hidden]' : v, 2).slice(0, 16000);
+}
+
+function updateMetric(idBig, idSub, obj, fallback){
+  const elBig=$(idBig), elSub=$(idSub);
+  elBig.textContent=statusText(obj?.ok); elBig.className='big '+statusClass(obj?.ok);
+  elSub.textContent=(obj?.endpoint||fallback||'')+(obj?.http_code!=null?' | HTTP '+obj.http_code:'');
+}
+
+function renderTransports(transports){
+  const order = ['skywire','yggdrasil','i2p','tor'];
+  $('transportGrid').innerHTML = order.map(key => {
+    const t = transports?.[key];
+    const mandatory = key === 'skywire' || t?.mandatory;
+    const state = t ? (t.ok ? 'OBSERVED' : 'NOT OBSERVED') : 'UNKNOWN';
+    const cls = t ? (t.ok ? 'ok' : mandatory ? 'bad' : 'warn') : 'warn';
+    const details=[];
+    if (t?.binary) details.push('binary: '+t.binary);
+    if (t?.public_key) details.push('visor PK: '+t.public_key);
+    if (t?.processes?.length) details.push('processes: '+t.processes.map(p => p.pid+':'+p.name).join(', '));
+    if (t?.probe_output) details.push('probe: '+t.probe_output.replace(/\s+/g,' ').slice(0,220));
+    if (!details.length) details.push('No evidence in current observation.');
+    return `<div class="transport ${mandatory?'mandatory':''}"><h3><span>${escapeHtml(t?.name || key.toUpperCase())}${mandatory?' · REQUIRED':' · optional'}</span><span class="state ${cls}">${state}</span></h3><div class="detail">${details.map(escapeHtml).join('<br>')}</div></div>`;
+  }).join('');
+}
+
+function renderChecks(checks){
+  const rows = Object.entries(checks).map(([name,v]) => {
+    const details=[]; if(v?.endpoint)details.push(v.endpoint); if(v?.http_code!=null)details.push('HTTP '+v.http_code); if(v?.note)details.push(v.note); if(v?.body_excerpt)details.push(v.body_excerpt);
+    return `<tr><td class="code">${escapeHtml(name)}</td><td class="${statusClass(v?.ok)}"><strong>${statusText(v?.ok)}</strong></td><td class="code">${escapeHtml(details.join(' | ')||'No detail')}</td></tr>`;
+  }).join('') || `<tr><td colspan="3" class="code">No checks in state.</td></tr>`;
+  $('checksTable').querySelector('tbody').innerHTML = rows;
+}
+
+function renderListeners(listeners){
+  const tbody = $('listenersTable').querySelector('tbody');
+  tbody.innerHTML = listeners.map((l,i) => {
+    const canKill = managerAvailable && Number.isInteger(Number(l.pid)) && Number(l.pid)>2;
+    const proc = l.process || (l.exe ? l.exe.split(/[\\/]/).pop() : '');
+    return `<tr data-listener="${i}" ondblclick="showListener(${i})"><td class="code">${escapeHtml(l.proto||'')}</td><td class="code">${escapeHtml((l.addr||'')+(l.port?':'+l.port:''))}</td><td class="code">${escapeHtml(l.pid??'—')}</td><td class="code">${escapeHtml(proc||'unknown')}</td><td><button class="btn danger" ${canKill?'':'disabled'} onclick="event.stopPropagation();killListener(${i})">KILL</button></td></tr>`;
+  }).join('') || `<tr><td colspan="5" class="code">No listeners observed.</td></tr>`;
+}
+
+function showListener(i){
+  const l = currentState?.listeners?.[i]; if(!l)return;
+  const kv = [['Protocol',l.proto],['Bind',(l.addr||'')+(l.port?':'+l.port:'')],['PID',l.pid],['User',l.user],['Process',l.process],['Executable',l.exe],['Full command line',l.cmdline],['Raw observation',l.raw]];
+  $('listenerDetails').innerHTML = kv.map(([k,v]) => `<div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v??'')}</div>`).join('');
+  $('listenerModal').classList.add('open');
+}
+
+async function killListener(i){
+  const l = currentState?.listeners?.[i];
+  if(!l || !managerAvailable || !managerToken) return;
+  const desc = l.cmdline || l.process || ('PID '+l.pid);
+  if(!confirm(`Terminate listener PID ${l.pid}?\n\n${desc}`)) return;
+  const r = await fetch('/api/kill', {method:'POST',headers:{'Content-Type':'application/json','X-NESS-Admin-Token':managerToken},body:JSON.stringify({pid:l.pid})});
+  const data = await r.json().catch(()=>({ok:false,error:'invalid response'}));
+  if(!r.ok || !data.ok){ alert('Kill failed: '+(data.error||('HTTP '+r.status))); return; }
+  await new Promise(res=>setTimeout(res,700));
+  loadBestState();
+}
+
+function renderWallet(state){
+  const wrap=$('walletList'); const items=[];
+  if(state.chain){ if(state.chain.best_block)items.push(['Best block',state.chain.best_block]); if(state.chain.network)items.push(['Network',state.chain.network]); if(state.chain.config_path)items.push(['Emercoin config',state.chain.config_path]); }
+  if(state.wallet){ if(state.wallet.default_wallet)items.push(['Default wallet',state.wallet.default_wallet]); if(state.wallet.note)items.push(['Wallet note',state.wallet.note]); }
+  wrap.innerHTML = items.length ? items.map(([k,v])=>`<div class="row"><h3>${escapeHtml(k)}</h3><small class="code">${escapeHtml(String(v))}</small></div>`).join('') : '<div class="notice">No wallet or chain observations loaded yet.</div>';
+  renderLocalWallets();
+}
+
+async function handleWalletFile(event, kind){
+  const file = event.target.files && event.target.files[0]; if(!file)return;
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  const sha = Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  let parsed=null, safe=[];
+  try { parsed = JSON.parse(new TextDecoder().decode(buf)); safe = collectSafeWalletFields(parsed); } catch(_) {}
+  locallyLoadedWallets.push({kind,name:file.name,size:file.size,sha256:sha,json:!!parsed,safe});
+  renderLocalWallets();
+  event.target.value='';
+}
+
+function collectSafeWalletFields(obj){
+  const result=[]; const secret=/seed|private|secret|mnemonic|password|passphrase|xprv|wif|cipher|encrypted|crypto/i; const publicish=/address|public|label|coin|type|version|filename|name|id/i;
+  function walk(v,path,depth){
+    if(depth>7 || result.length>=30 || v==null)return;
+    if(Array.isArray(v)){ for(let i=0;i<Math.min(v.length,30);i++) walk(v[i],path+'['+i+']',depth+1); return; }
+    if(typeof v==='object'){
+      for(const [k,val] of Object.entries(v)){
+        if(secret.test(k)) continue;
+        const p=path?path+'.'+k:k;
+        if((typeof val==='string'||typeof val==='number'||typeof val==='boolean') && publicish.test(k)) result.push([p,String(val).slice(0,300)]);
+        else walk(val,p,depth+1);
+        if(result.length>=30)break;
+      }
+    }
+  }
+  walk(obj,'',0); return result;
+}
+
+function renderLocalWallets(){
+  const wrap=$('walletLocal');
+  wrap.innerHTML = locallyLoadedWallets.map((w,idx)=>{
+    const fields = w.safe.length ? w.safe.map(([k,v])=>`<div class="walletKV"><b>${escapeHtml(k)}</b><span class="code">${escapeHtml(v)}</span></div>`).join('') : '<div class="notice">No public JSON fields rendered. Binary/unknown wallet content remains unread.</div>';
+    return `<div class="row"><h3>${escapeHtml(w.kind)} wallet: ${escapeHtml(w.name)}</h3><div class="walletKV"><b>Size</b><span>${w.size} bytes</span><b>SHA-256</b><span class="code">${w.sha256}</span><b>Format</b><span>${w.json?'JSON parsed locally':'binary / unknown, not parsed'}</span></div><div style="margin-top:10px">${fields}</div><div style="margin-top:10px"><button class="btn" onclick="removeWallet(${idx})">Remove view</button></div></div>`;
+  }).join('');
+}
+function removeWallet(i){ locallyLoadedWallets.splice(i,1); renderLocalWallets(); }
+
+function renderAgents(state){
+  const agents=state.agents||[]; $('agentsList').innerHTML = agents.length ? agents.map(a=>`<div class="row"><h3>${escapeHtml(a.alias||a.id||'agent')}</h3><small class="code">${escapeHtml(a.id||'')}</small><div style="margin-top:8px">${escapeHtml(a.summary||'')}</div></div>`).join('') : '<div class="notice">No real agent registry imported.</div>';
+}
+function renderEvents(events){
+  $('eventLog').innerHTML = events.length ? events.map(ev=>`<div class="ev"><div class="ts">${escapeHtml(ev.timestamp||'')}</div><div class="tag ${tagClass(ev.level)}">${escapeHtml((ev.level||'info').toUpperCase())}</div><div>${escapeHtml(ev.message||'')}</div></div>`).join('') : '<div class="notice">No events observed yet.</div>';
+}
+function tagClass(level){ level=(level||'info').toLowerCase(); return ['ok','warn','bad','info'].includes(level)?level:(level==='error'||level==='deny'?'bad':'info'); }
+function escapeHtml(s){ return String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+loadBestState();
+</script>
+</body>
+</html>

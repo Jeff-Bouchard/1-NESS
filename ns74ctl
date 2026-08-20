@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+# ns74ctl — self-contained installer & manager for the ns74 stack.
+#
+# Works on Linux (full deploy) and Windows Git Bash / macOS (build, keys, WORM,
+# and anything not needing root services). Never hard-fails: if a component or
+# a root-only tool is missing, it says so and moves on.
+#
+#   ns74ctl                 interactive menu (default)
+#   ns74ctl install         do everything possible on THIS machine
+#   ns74ctl status          what's present / running
+#   ns74ctl seed            create THIS node's local gate seed
+#   ns74ctl keys            show all derived public identities
+#   ns74ctl gate      build|start|stop|status|test
+#   ns74ctl resolver  install|verify|status      (Linux+root)
+#   ns74ctl dnscrypt  install <ip>|stamps|status (Linux+root for install)
+#   ns74ctl worm      publish-all|sign|verify|key
+
+set -uo pipefail   # NOTE: no -e. We handle errors explicitly, never abort.
+
+# -------------------------------------------------------------- locations
+NS74="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export NS74_HOME="$NS74"
+
+# Keys live with the other privateness keys, in the user's profile.
+KEYDIR="${NS74_KEYDIR:-$HOME/.privateness-keys}"
+SEED="$KEYDIR/master.seed"
+
+RUN="$NS74/run"; LOG="$NS74/log"
+mkdir -p "$RUN" "$LOG" 2>/dev/null || true
+
+GATE_DIR="$NS74/ns74-gate"
+RES_DIR="$NS74/ns74-resolver"
+DNS_DIR="$NS74/ns74-dnscrypt"
+WORM="$NS74/ns74-worm.py"
+IDENTITY="$NS74/ns74-identity.py"
+
+[ -f "$NS74/ns74.env" ] && . "$NS74/ns74.env" 2>/dev/null || true
+
+# Fleet identity is DECENTRALIZED: no shared seed. Each node has its own key,
+# chained to the org master-user via NVS. These name the trust root.
+MASTER_USER="${NS74_MASTER_USER:-ness}"
+ORG_ADDR="${NS74_ORG_ADDRESS:-}"
+NODE_URL="${NS74_NODE_URL:-}"
+
+# -------------------------------------------------------------- platform
+OS="$(uname -s 2>/dev/null || echo unknown)"
+case "$OS" in
+  Linux*)  PLAT=linux ;;
+  Darwin*) PLAT=macos ;;
+  MINGW*|MSYS*|CYGWIN*) PLAT=windows ;;
+  *) PLAT=unknown ;;
+esac
+IS_ROOT=0; [ "$(id -u 2>/dev/null || echo 1000)" = "0" ] && IS_ROOT=1
+
+# -------------------------------------------------------------- output
+if [ -t 1 ]; then
+  R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'; B=$'\033[1m'; N=$'\033[0m'
+else R=; G=; Y=; C=; B=; N=; fi
+say()  { printf '%s==>%s %s\n' "$B" "$N" "$*"; }
+ok()   { printf '  %s[ok]%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s[!!]%s %s\n' "$Y" "$N" "$*"; }
+skip() { printf '  %s[--]%s %s\n' "$C" "$N" "$*"; }
+err()  { printf '  %s[xx]%s %s\n' "$R" "$N" "$*"; }
+sub()  { printf '%s--- %s ---%s\n' "$C" "$*" "$N"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# python that has pynacl (for key derivation + WORM). Returns 0 if usable.
+PYTHON=""
+find_python() {
+  local p
+  for p in python3 python; do
+    if have "$p" && "$p" -c "import nacl" >/dev/null 2>&1; then PYTHON="$p"; return 0; fi
+  done
+  # python present but no pynacl?
+  for p in python3 python; do have "$p" && { PYTHON="$p"; return 1; }; done
+  return 2
+}
+
+need_seed() { [ -f "$SEED" ] || { err "no gate seed — run: ns74ctl seed"; return 1; }; }
+
+# ------------------------------------------------------------------ seed
+cmd_seed() {
+  say "this node's local gate seed"
+  if [ -f "$SEED" ]; then
+    warn "$SEED already exists — refusing to overwrite."
+    warn "It derives THIS node's gate key (entropy-gate token, provider/DNSCrypt"
+    warn "key, and this node's WORM signing key). Regenerating it would change"
+    warn "this node's gate key and invalidate passes it has already sold."
+    return 0
+  fi
+  mkdir -p "$KEYDIR" 2>/dev/null || { err "cannot create $KEYDIR"; return 1; }
+  chmod 700 "$KEYDIR" 2>/dev/null || true
+  # 32 random bytes as hex. Prefer /dev/urandom; fall back to python; then openssl.
+  if [ -r /dev/urandom ] && have od; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$SEED"
+  elif find_python; then
+    "$PYTHON" -c "import os,sys;sys.stdout.write(os.urandom(32).hex())" > "$SEED"
+  elif have openssl; then
+    openssl rand -hex 32 | tr -d '\n' > "$SEED"
+  else
+    err "no random source (need /dev/urandom, python, or openssl)"; return 1
+  fi
+  chmod 600 "$SEED" 2>/dev/null || true
+  ok "wrote $SEED"
+  ok "stored with your other privateness keys in $KEYDIR"
+  warn "This is THIS node's key alone. Do NOT copy it to other nodes — each node"
+  warn "generates its own (that is what makes the fleet decentralized)."
+  warn "Lose it and this node's gate key changes (passes it sold stop verifying);"
+  warn "leak it and only THIS node's gate is impersonable. The other nodes and the"
+  warn "fleet identity are untouched. Back it up offline all the same."
+}
+
+# ------------------------------------------------------------------ keys
+cmd_keys() {
+  need_seed || return 1
+  say "derived public identities (from $SEED)"
+  if ! find_python; then
+    warn "python+pynacl not available — install:  pip install pynacl"
+    skip "keys shown on a machine with pynacl"
+    return 0
+  fi
+  if [ -f "$DNS_DIR/derive-provider-key.py" ]; then
+    sub "DNSCrypt provider"
+    "$PYTHON" "$DNS_DIR/derive-provider-key.py" "$SEED" --fingerprint 2>/dev/null | sed 's/^/  /' \
+      || warn "derive failed"
+  fi
+  if [ -f "$WORM" ]; then
+    sub "WORM signing key"
+    printf '' > /tmp/_ns74_empty 2>/dev/null
+    echo "ns74" > /tmp/_ns74_probe 2>/dev/null
+    "$PYTHON" "$WORM" sign "$SEED" _probe --file /tmp/_ns74_probe 2>/dev/null \
+      | grep -o 'verify="[^"]*"' | sed 's/^/  /' || warn "worm key unavailable"
+    rm -f /tmp/_ns74_probe 2>/dev/null
+  fi
+}
+
+# --------------------------------------------------------------- gate
+gate() {
+  case "${1:-}" in
+    build)
+      have go || export PATH="$PATH:/usr/local/go/bin"
+      if ! have go; then err "go not installed — get it from https://go.dev/dl"; return 1; fi
+      [ -d "$GATE_DIR" ] || { err "gate source missing ($GATE_DIR)"; return 1; }
+      local bin="$RUN/ns74-gate"; [ "$PLAT" = windows ] && bin="$RUN/ns74-gate.exe"
+      if ( cd "$GATE_DIR" && go build -o "$bin" . ); then ok "gate built -> $bin"
+      else err "gate build failed"; return 1; fi ;;
+    start)
+      need_seed || return 1
+      local bin="$RUN/ns74-gate"; [ "$PLAT" = windows ] && bin="$RUN/ns74-gate.exe"
+      [ -x "$bin" ] || gate build || return 1
+      local args=(-seed-file "$SEED" -emc-rpc "${EMC_RPC:-http://127.0.0.1:6662}")
+      [ "${GATE_DEV:-0}" = "1" ] && args+=(-dev)
+      args+=(-addr "${GATE_ADDR:-127.0.0.1:8402}")
+      nohup "$bin" "${args[@]}" >>"$LOG/gate.log" 2>&1 &
+      echo $! > "$RUN/gate.pid"; sleep 1
+      if kill -0 "$(cat "$RUN/gate.pid" 2>/dev/null)" 2>/dev/null; then ok "gate started (pid $(cat "$RUN/gate.pid"))"
+      else err "gate failed to start — see $LOG/gate.log"; return 1; fi ;;
+    stop)
+      if [ -f "$RUN/gate.pid" ] && kill "$(cat "$RUN/gate.pid")" 2>/dev/null; then ok "gate stopped"
+      else warn "gate not running"; fi; rm -f "$RUN/gate.pid" 2>/dev/null ;;
+    status)
+      if have curl && curl -fsS --max-time 3 "http://${GATE_ADDR:-127.0.0.1:8402}/health" >/dev/null 2>&1
+      then ok "gate up (${GATE_ADDR:-127.0.0.1:8402})"; else warn "gate down"; fi ;;
+    test)
+      local bin="$RUN/ns74-gate"; [ "$PLAT" = windows ] && bin="$RUN/ns74-gate.exe"
+      [ -x "$bin" ] || gate build || return 1
+      "$bin" -selftest ;;
+    *) echo "gate: build|start|stop|status|test" ;;
+  esac
+}
+
+# --------------------------------------------------------------- resolver
+resolver() {
+  case "${1:-}" in
+    install)
+      if [ "$PLAT" != linux ]; then skip "resolver install is Linux-only (you're on $PLAT)"; return 0; fi
+      [ -f "$RES_DIR/deploy-resolver.sh" ] || { err "resolver deploy script missing"; return 1; }
+      if [ "$IS_ROOT" = 0 ] && ! have sudo; then err "need root (or sudo) to install the resolver"; return 1; fi
+      need_seed || return 1
+      local runner="bash"; [ "$IS_ROOT" = 0 ] && runner="sudo bash"
+      ( cd "$RES_DIR" && $runner ./deploy-resolver.sh ) ;;
+    verify)
+      [ -f "$RES_DIR/verify-resolver.sh" ] || { err "verify script missing"; return 1; }
+      ( cd "$RES_DIR" && bash ./verify-resolver.sh "${DOMAIN:-ns74.com}" "${2:-}" ) ;;
+    status)
+      if [ "$PLAT" = linux ] && have systemctl; then
+        systemctl is-active --quiet unbound 2>/dev/null && ok "unbound up" || warn "unbound down"
+      else skip "resolver runs on the Linux node, not $PLAT"; fi ;;
+    *) echo "resolver: install|verify|status" ;;
+  esac
+}
+
+# --------------------------------------------------------------- dnscrypt
+dnscrypt() {
+  case "${1:-}" in
+    install)
+      if [ "$PLAT" != linux ]; then skip "dnscrypt install is Linux-only (you're on $PLAT)"; return 0; fi
+      [ -f "$DNS_DIR/deploy-dnscrypt.sh" ] || { err "dnscrypt deploy script missing"; return 1; }
+      if [ "$IS_ROOT" = 0 ] && ! have sudo; then err "need root (or sudo) to install dnscrypt"; return 1; fi
+      need_seed || return 1
+      local ip="${2:-${EXTERNAL_IP:-}}"
+      [ -n "$ip" ] || { err "need public IP:  ns74ctl dnscrypt install <ip>"; return 1; }
+      local runner="bash"; [ "$IS_ROOT" = 0 ] && runner="sudo bash"
+      ( cd "$DNS_DIR" && $runner ./deploy-dnscrypt.sh --external "$ip" --seed "$SEED" ) ;;
+    stamps)
+      need_seed || return 1
+      if ! find_python; then warn "need python+pynacl for stamps"; return 1; fi
+      "$PYTHON" "$DNS_DIR/derive-provider-key.py" "$SEED" --fingerprint ;;
+    status)
+      if [ "$PLAT" = linux ] && have systemctl; then
+        systemctl is-active --quiet encrypted-dns 2>/dev/null && ok "encrypted-dns up" || warn "encrypted-dns down"
+      else skip "dnscrypt runs on the Linux node, not $PLAT"; fi ;;
+    *) echo "dnscrypt: install <ip>|stamps|status" ;;
+  esac
+}
+
+# --------------------------------------------------------------- worm
+worm() {
+  need_seed || return 1
+  if ! find_python; then err "WORM needs python+pynacl:  pip install pynacl"; return 1; fi
+  case "${1:-}" in
+    publish-all)
+      say "publishing public configs as signed WORM objects"
+      local rpc="${EMC_RPC:-http://127.0.0.1:6662}"
+      local pub_ok=0
+      _pub() { # name tags file
+        "$PYTHON" "$WORM" publish "$SEED" "$1" --tags "$2" --file "$3" \
+          --emc-rpc "$rpc" --emc-user "${NS74_EMC_USER:-}" --emc-pass "${NS74_EMC_PASS:-}" \
+          && pub_ok=$((pub_ok+1)) || warn "$1: not anchored (emercoind reachable & synced?)"; }
+      [ -f "$DNS_DIR/STAMPS.txt" ] && _pub dnscrypt-stamps "ns74,dnscrypt,stamps" "$DNS_DIR/STAMPS.txt"
+      if have curl && curl -fsS --max-time 3 "http://${GATE_ADDR:-127.0.0.1:8402}/.well-known/x402" -o /tmp/ns74-manifest.json 2>/dev/null; then
+        _pub x402-manifest "ns74,x402,manifest" /tmp/ns74-manifest.json; fi
+      if have curl && curl -fsS --max-time 3 "http://${GATE_ADDR:-127.0.0.1:8402}/entropy/key" -o /tmp/ns74-poprf.json 2>/dev/null; then
+        _pub entropy-key "ns74,poprf,entropy" /tmp/ns74-poprf.json; fi
+      [ "$pub_ok" -gt 0 ] && ok "anchored $pub_ok record(s)" || warn "nothing anchored — records were printed above for manual NVS entry"
+      ;;
+    sign)   shift; "$PYTHON" "$WORM" sign "$SEED" "$@" ;;
+    verify) "$PYTHON" "$WORM" verify "${2:?need file}" ;;
+    key)    "$PYTHON" "$WORM" nvskey "${2:?need name}" ;;
+    *) echo "worm: publish-all|sign <name> --file f|verify <file>|key <name>" ;;
+  esac
+}
+
+# --------------------------------------------------------------- node identity
+# Decentralized: each core-node has its OWN key (never shared), chained to the
+# org master-user on-chain. Replaces the old shared-seed model.
+node() {
+  if ! find_python; then err "node identity needs python+pynacl"; return 1; fi
+  case "${1:-}" in
+    gen)
+      local url="${2:-$NODE_URL}"
+      [ -n "$url" ] || { err "need node URL:  ns74ctl node gen https://nodeN.ns74.com"; return 1; }
+      "$PYTHON" "$IDENTITY" gen-node "$url" --master "$MASTER_USER" \
+        --keydir "$KEYDIR" ${NS74_FORCE_BUILTIN:+--builtin}
+      ;;
+    worm)
+      local url="${2:-$NODE_URL}"
+      [ -n "$url" ] || { err "need node URL"; return 1; }
+      "$PYTHON" "$IDENTITY" node-worm "$url" --master "$MASTER_USER" --keydir "$KEYDIR"
+      ;;
+    verify)
+      [ -n "${2:-}" ] || { err "need a worm.xml file"; return 1; }
+      "$PYTHON" "$IDENTITY" verify-node "$2" --master "$MASTER_USER" \
+        ${ORG_ADDR:+--org-addr "$ORG_ADDR"} --emc-rpc "${EMC_RPC:-http://127.0.0.1:6662}" \
+        --emc-user "${NS74_EMC_USER:-}" --emc-pass "${NS74_EMC_PASS:-}"
+      ;;
+    discover)
+      "$PYTHON" "$IDENTITY" discover --emc-rpc "${EMC_RPC:-http://127.0.0.1:6662}" \
+        --emc-user "${NS74_EMC_USER:-}" --emc-pass "${NS74_EMC_PASS:-}"
+      ;;
+    *) echo "node: gen <url>|worm <url>|verify <file>|discover" ;;
+  esac
+}
+
+# --------------------------------------------------------------- install
+cmd_install() {
+  say "ns74 install — doing everything possible on this machine ($PLAT)"
+  echo
+
+  sub "1. node identity (decentralized — this node's own key)"
+  if [ -n "$NODE_URL" ]; then
+    node gen "$NODE_URL" || warn "node key gen skipped"
+  else
+    warn "NS74_NODE_URL not set — set it to this node's URL, then: ns74ctl node gen"
+    warn "(each of the 21 core-nodes has its OWN key; no shared seed)"
+  fi
+  # local seed still used for the single-operator gate key derivation
+  [ -f "$SEED" ] && ok "local gate seed present" || cmd_seed
+
+  sub "2. dependencies check"
+  have go && ok "go present" || skip "go missing (needed to build the gate)"
+  if find_python; then ok "python + pynacl present"
+  elif [ $? = 1 ]; then warn "python present but pynacl missing — pip install pynacl"
+  else skip "python missing (needed for keys/WORM)"; fi
+  have curl && ok "curl present" || skip "curl missing"
+
+  sub "3. gate (portable — builds anywhere with go)"
+  if have go || { export PATH="$PATH:/usr/local/go/bin"; have go; }; then
+    gate build && gate test
+  else skip "gate build skipped (no go)"; fi
+
+  sub "4. resolver + DoH (Linux node only)"
+  resolver install
+
+  sub "5. DNSCrypt + Anonymized relay (Linux node only)"
+  dnscrypt install
+
+  sub "6. show identities"
+  cmd_keys
+
+  echo; say "install pass complete"
+  echo "  What ran depends on this platform. On Windows/macOS you get keys,"
+  echo "  the gate, and WORM; the resolver + dnscrypt install on the Linux node."
+}
+
+# --------------------------------------------------------------- status
+cmd_status() {
+  say "ns74 status  (platform: $PLAT, root: $([ "$IS_ROOT" = 1 ] && echo yes || echo no))"
+  sub "identity"
+  [ -f "$SEED" ] && ok "gate seed: $SEED" || warn "no gate seed yet (ns74ctl seed)"
+  sub "gate";     gate status
+  sub "resolver"; resolver status
+  sub "dnscrypt"; dnscrypt status
+}
+
+# ------------------------------------------------------------------ menu
+menu_fronts() {
+  local up=0
+  have curl && curl -fsS --max-time 2 "http://${GATE_ADDR:-127.0.0.1:8402}/health" >/dev/null 2>&1 && up=$((up+1))
+  if [ "$PLAT" = linux ] && have systemctl; then
+    systemctl is-active --quiet unbound 2>/dev/null && up=$((up+1))
+    systemctl is-active --quiet encrypted-dns 2>/dev/null && up=$((up+1))
+  fi
+  printf '%d up' "$up"
+}
+
+cmd_menu() {
+  while true; do
+    clear 2>/dev/null || true
+    cat <<BANNER
+${B}  ns74ctl${N} · stack manager   ${C}[$PLAT]${N}
+  ------------------------------------------------
+  fronts : $(menu_fronts)
+  gate seed: $([ -f "$SEED" ] && printf '%spresent%s' "$G" "$N" || printf '%smissing%s' "$R" "$N") ${C}$KEYDIR${N}
+  node   : ${C}${NODE_URL:-<set NS74_NODE_URL>}${N}  master=${MASTER_USER}
+  ------------------------------------------------
+
+   ${B}1${N})  install (this machine)   ${B}6${N})  gate: start / stop
+   ${B}2${N})  status                   ${B}7${N})  resolver: verify
+   ${B}3${N})  create gate seed         ${B}8${N})  dnscrypt: show stamps
+   ${B}4${N})  worm: publish all        ${B}9${N})  gate: selftest
+   ${B}5${N})  worm: verify a file      ${B}0${N})  node: discover org chain
+
+   ${B}q${N})  quit
+BANNER
+    printf '\n  > '; read -r c || break; echo
+    case "$c" in
+      1) cmd_install ;;
+      2) cmd_status ;;
+      3) cmd_seed ;;
+      4) worm publish-all ;;
+      5) printf '  worm file: '; read -r f; [ -n "$f" ] && worm verify "$f" ;;
+      6) printf '  start or stop? '; read -r v; gate "${v:-status}" ;;
+      7) resolver verify ;;
+      8) dnscrypt stamps ;;
+      9) gate test ;;
+      0) node discover ;;
+      q|Q|"") clear 2>/dev/null || true; return 0 ;;
+      *) warn "unknown option: $c" ;;
+    esac
+    printf '\n  %s[enter to continue]%s ' "$B" "$N"; read -r _ || true
+  done
+}
+
+usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-}" in
+  install)  cmd_install ;;
+  status)   cmd_status ;;
+  seed)     cmd_seed ;;
+  keys)     cmd_keys ;;
+  gate)     shift; gate "$@" ;;
+  resolver) shift; resolver "$@" ;;
+  dnscrypt) shift; dnscrypt "$@" ;;
+  worm)     shift; worm "$@" ;;
+  node)     shift; node "$@" ;;
+  menu|tui) cmd_menu ;;
+  "") if [ -t 0 ] && [ -t 1 ]; then cmd_menu; else usage; fi ;;
+  -h|--help|help) usage ;;
+  *) err "unknown command '$1' — try: ns74ctl help"; exit 1 ;;
+esac
